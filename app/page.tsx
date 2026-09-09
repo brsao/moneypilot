@@ -89,7 +89,10 @@ export default function Page() {
     setInsightsLoading(true)
     try {
       const response = await fetch('/api/insights', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(analysis) })
-      const result = await response.json()
+      const text = await response.text()
+      let result: { text?: string; detail?: string } = {}
+      try { result = text ? JSON.parse(text) : {} } catch { result = { detail: text.slice(0, 300) } }
+      
       if (!response.ok) throw new Error(result.detail ?? 'Gemini insights are unavailable.')
       setInsights(result.text ?? '')
     } catch (error) {
