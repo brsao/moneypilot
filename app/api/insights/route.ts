@@ -4,11 +4,7 @@ export const maxDuration = 120
 
 export async function POST(request: Request) {
   // ✅ FIX: Bracket notation forces runtime evaluation + hardcoded live fallback
-  const backendUrl = (
-    process.env["PYTHON_API_URL"] ?? 
-    process.env["PYTHON_SERVER_URL"] ?? 
-    'https://moneypilot-api-722080548291.us-central1.run.app'
-  ).replace(/\/$/, '')
+  const backendUrl = (process.env["PYTHON_SERVER_URL"] || 'https://moneypilot-api-722080548291.us-central1.run.app').replace(/\/$/, '')
 
   try {
     const payload = await request.json().catch(() => ({}))

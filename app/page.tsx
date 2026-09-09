@@ -57,7 +57,7 @@ export default function Page() {
       .slice(-12)
   }, [chartData])
 
-  // ✅ NEW: cumulative net cash flow per month for the line graph
+  // Cumulative net cash flow per month for the line graph
   const cashFlowSeries = useMemo(() => {
     let running = 0
     return chartPoints.map((point) => {
@@ -67,8 +67,13 @@ export default function Page() {
     })
   }, [chartPoints])
 
-  const income = transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0)
-  const expenses = transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0)
+  // ✅ FIX: full-ledger totals from ClickHouse aggregates (all uploaded PDFs combined),
+  // with fallback to the recent list if the backend omits them
+  const summaryAgg = analysis?.summary.summary ?? {}
+  const income = summaryAgg.income?.total ?? transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0)
+  const expenses = summaryAgg.expense?.total ?? transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0)
+  const totalCount = (summaryAgg.income?.count ?? 0) + (summaryAgg.expense?.count ?? 0)
+
   const categories = analysis?.summary.top_categories ?? []
   const totalSpent = categories.reduce((sum, item) => sum + item.total, 0)
   const health = analysis ? Math.max(0, Math.min(100, Math.round(70 + (income > expenses ? 12 : -8)))) : 0
@@ -84,6 +89,20 @@ export default function Page() {
     setSelectedFiles(Array.from(files).slice(0, 8))
   }
 
+  async function refreshAnalysis() {
+    try {
+      const res = await fetch('/api/bootstrap')
+      if (!res.ok) return
+      const data = await res.json()
+      if ((data.transaction_count ?? 0) > 0) setAnalysis(data as AnalysisResult)
+    } catch { /* backend offline: keep current state */ }
+  }
+
+  // First load: show persisted ClickHouse data (or seed the sample statement)
+  useEffect(() => {
+    refreshAnalysis()
+  }, [])
+
   async function loadInsights() {
     if (!analysis || insightsLoading) return
     setInsightsLoading(true)
@@ -92,7 +111,6 @@ export default function Page() {
       const text = await response.text()
       let result: { text?: string; detail?: string } = {}
       try { result = text ? JSON.parse(text) : {} } catch { result = { detail: text.slice(0, 300) } }
-      
       if (!response.ok) throw new Error(result.detail ?? 'Gemini insights are unavailable.')
       setInsights(result.text ?? '')
     } catch (error) {
@@ -113,7 +131,7 @@ export default function Page() {
       const result = await response.json()
       if (!response.ok) throw new Error(result.detail ?? 'The Python service could not analyze these files.')
       setAnalysis(result as AnalysisResult)
-      await refreshAnalysis()   // ✅ re-read full ClickHouse aggregates so every upload visibly updates the dashboard
+      await refreshAnalysis()   // re-read full ClickHouse aggregates so every upload visibly updates the dashboard
       setSelectedFiles([])
       setShowPanel(false)
     } catch (error) {
@@ -122,20 +140,6 @@ export default function Page() {
       setProcessing(false)
     }
   }
-
-  async function refreshAnalysis() {
-    try {
-      const res = await fetch('/api/bootstrap')
-      if (!res.ok) return
-      const data = await res.json()
-      if ((data.transaction_count ?? 0) > 0) setAnalysis(data as AnalysisResult)
-    } catch { /* backend offline: keep current state */ }
-  }
-
-  // ✅ First load: show persisted ClickHouse data (or seed the sample statement)
-  useEffect(() => {
-    refreshAnalysis()
-  }, [])
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -173,7 +177,7 @@ export default function Page() {
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="mb-1 text-sm font-medium text-primary">Your financial cockpit</p><h2 className="text-3xl font-semibold tracking-tight md:text-4xl">Cash-flow health</h2><p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">A calm view of what is coming in, going out, and what you can do next.</p></div><button onClick={() => setShowPanel(true)} className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:opacity-90"><Plus size={17} />Add statement</button></div>
 
             <div className="grid gap-4 md:grid-cols-3">
-              <article className="rounded-2xl border border-border bg-card p-5"><div className="mb-6 flex items-center justify-between"><span className="text-sm text-muted-foreground">Available balance</span><span className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-accent-foreground">Healthy</span></div><p className="text-3xl font-semibold tracking-tight">{analysis ? formatMoney(Math.max(0, income - expenses)) : '—'}</p><div className="mt-3 flex items-center gap-1 text-sm text-muted-foreground">{analysis ? `${transactions.length} transactions analyzed` : 'Upload data to calculate'}</div></article>
+              <article className="rounded-2xl border border-border bg-card p-5"><div className="mb-6 flex items-center justify-between"><span className="text-sm text-muted-foreground">Available balance</span><span className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-accent-foreground">Healthy</span></div><p className="text-3xl font-semibold tracking-tight">{analysis ? formatMoney(Math.max(0, income - expenses)) : '—'}</p><div className="mt-3 flex items-center gap-1 text-sm text-muted-foreground">{analysis ? `${totalCount || transactions.length} transactions analyzed` : 'Upload data to calculate'}</div></article>
               <article className="rounded-2xl border border-border bg-card p-5"><div className="mb-6 flex items-center justify-between"><span className="text-sm text-muted-foreground">Projected month-end</span><Gauge size={18} className="text-muted-foreground" /></div><p className="text-3xl font-semibold tracking-tight">{analysis ? formatMoney(income - expenses) : '—'}</p><div className="mt-3 flex items-center gap-1 text-sm text-muted-foreground">{analysis ? 'Current analyzed period' : 'Waiting for your data'}</div></article>
               <article className="rounded-2xl border border-border bg-primary p-5 text-primary-foreground"><div className="mb-5 flex items-center justify-between"><span className="text-sm opacity-75">MoneyPilot score</span><Sparkles size={18} /></div><div className="flex items-end gap-3"><p className="text-4xl font-semibold tracking-tight">{health}</p><p className="mb-1 text-sm opacity-75">/ 100</p></div><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-primary-foreground/20"><div className="h-full rounded-full bg-primary-foreground" style={{ width: `${health}%` }} /></div><p className="mt-3 text-xs opacity-75">{analysis ? 'Your uploaded data powers this score.' : 'Upload a statement to calculate your score.'}</p></article>
             </div>
@@ -217,7 +221,6 @@ export default function Page() {
               <article className="rounded-2xl border border-border bg-card p-5 md:p-6"><div className="mb-7 flex items-start justify-between"><div><h3 className="font-semibold">Spending habits</h3><p className="mt-1 text-sm text-muted-foreground">{analysis ? `${formatMoney(totalSpent)} total analyzed` : 'No spending data yet'}</p></div><button className="text-muted-foreground"><MoreHorizontal size={19} /></button></div><div className="mb-8 flex items-center justify-center"><div className="relative flex size-44 items-center justify-center rounded-full" style={{ background: categories.length ? `conic-gradient(${categories.map((item, index) => { const start = categories.slice(0, index).reduce((sum, category) => sum + category.total, 0) / Math.max(totalSpent, 1) * 100; const end = (categories.slice(0, index + 1).reduce((sum, category) => sum + category.total, 0) / Math.max(totalSpent, 1)) * 100; return `var(--chart-${(index % 5) + 1}) ${start}% ${end}%` }).join(', ')})` : 'var(--muted)' }}><div className="flex size-28 flex-col items-center justify-center rounded-full bg-card"><span className="text-2xl font-semibold">{formatMoney(totalSpent)}</span><span className="text-xs text-muted-foreground">spent</span></div></div></div><div className="space-y-3">{categories.length ? categories.map((item, index) => <div key={item.category} className="flex items-center justify-between text-sm"><span className="flex items-center gap-2 text-muted-foreground"><i className={`size-2 rounded-full ${categoryColors[index % categoryColors.length]}`} />{item.category}</span><span className="font-medium">{formatMoney(item.total)}</span></div>) : <p className="text-sm text-muted-foreground">Upload data to see spending habits.</p>}</div></article>
             </div>
 
-            {/* ✅ NEW ARTICLE: CASH-FLOW LINE GRAPH (below the two charts) */}
             <article className="rounded-2xl border border-border bg-card p-5 md:p-6">
               <div className="mb-6 flex items-start justify-between">
                 <div>
@@ -280,7 +283,7 @@ export default function Page() {
                   {!analysis && <p className="px-3 py-4 text-sm text-muted-foreground">No transactions loaded yet.</p>}
                 </div>
               </article>
-              <article className="rounded-2xl border border-primary/20 bg-accent/40 p-5 md:p-6"><div className="mb-5 flex items-center gap-2 text-sm font-semibold"><div className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground"><Sparkles size={14} /></div>MoneyPilot recommendation</div><p className="text-lg font-medium leading-7 tracking-tight">{analysis ? <>You have {formatMoney(Math.max(income - expenses, 0))} available after analyzed expenses.</> : 'Upload your financial data to receive a recommendation.'}</p><p className="mt-3 text-sm leading-6 text-muted-foreground">{analysis ? `MoneyPilot analyzed ${transactions.length} transactions across ${categories.length} spending categories.` : 'Recommendations are based only on your uploaded files.'}</p>
+              <article className="rounded-2xl border border-primary/20 bg-accent/40 p-5 md:p-6"><div className="mb-5 flex items-center gap-2 text-sm font-semibold"><div className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground"><Sparkles size={14} /></div>MoneyPilot recommendation</div><p className="text-lg font-medium leading-7 tracking-tight">{analysis ? <>You have {formatMoney(Math.max(income - expenses, 0))} available after analyzed expenses.</> : 'Upload your financial data to receive a recommendation.'}</p><p className="mt-3 text-sm leading-6 text-muted-foreground">{analysis ? `MoneyPilot analyzed ${totalCount || transactions.length} transactions across ${categories.length} spending categories.` : 'Recommendations are based only on your uploaded files.'}</p>
               <button onClick={() => { setActiveNav('Insights'); if (analysis && !insights && !insightsLoading) loadInsights() }} className="mt-5 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium hover:bg-muted">Review opportunities <ArrowUpRight size={15} /></button></article>
             </div>
 
