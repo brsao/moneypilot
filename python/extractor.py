@@ -1,136 +1,198 @@
-# extractor.py
-import pdfplumber
-from datetime import datetime
+"""MoneyPilot extractor: PDF / CSV / receipt-image -> normalized transactions."""
+from __future__ import annotations
+
 import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-def extract_pdf_statement(pdf_path: str) -> list[dict]:
-    """Extracts transactions from a real PDF bank statement."""
-    print(f"📄 Extracting data from {pdf_path}...")
-    
-    transactions = []
-    
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            
-            for table in tables:
-                for row in table:
-                    if len(row) >= 3:
-                        transaction = parse_transaction_row(row)
-                        if transaction:
-                            transactions.append(transaction)
-    
-    print(f"✅ Extracted {len(transactions)} transactions from PDF\n")
-    return transactions
+# ------------------------------------------------------------------ categories
+# Ordered rules: first match wins. Business-aware so "Other" stays tiny.
+CATEGORY_RULES: list[tuple[str, list[str]]] = [
+    ("Payroll & HR",        ["wages", "payroll", "staff salary", "employee salary", "benefits", "hr payment"]),
+    ("Revenue",             ["salary deposit", "sales deposit", "card sales", "cash sales", "client payment", "invoice paid", "revenue"]),
+    ("Groceries",           ["whole foods", "grocery", "groceries", "supermarket", "costco", "kroger", "safeway", "aldi"]),
+    ("Rent & Facilities",   ["rent", "lease", "landlord", "mortgage", "property"]),
+    ("Utilities",           ["electric", "utility", "utilities", "water bill", "gas bill", "internet", "broadband", "power"]),
+    ("Transport",           ["uber", "lyft", "taxi", "gas station", "shell", "fuel", "transit", "parking", "toll"]),
+    ("Entertainment",       ["netflix", "spotify", "cinema", "movie", "gaming", "concert", "hulu", "disney"]),
+    ("Shopping",            ["amazon", "target", "best buy", "ikea", "walmart", "mall", "retail", "purchase"]),
+    ("Food & Dining",       ["meat", "cheese", "tomato sauce", "dough", "flour", "supplier", "ingredients", "produce", "starbucks", "restaurant", "cafe", "dining", "bakery"]),
+    ("Business Operations", ["delivery platform", "platform fees", "marketing", "ads", "signage", "equipment", "repair", "maintenance", "software", "insurance", "license"]),
+]
 
-def parse_transaction_row(row: list) -> dict | None:
-    """Parses a table row into a transaction dict, skipping headers."""
-    try:
-        # Clean inputs - handle multiline cells like "September\n2026-09-01"
-        raw_date = str(row[0]).strip() if row[0] else None
-        description = str(row[1]).strip() if len(row) > 1 else "Unknown"
-        amount_str = str(row[2]).strip() if len(row) > 2 else "0"
-        
-        # FIX: Handle multiline dates by taking the last line (the actual date)
-        if raw_date and "\n" in raw_date:
-            raw_date = raw_date.split("\n")[-1].strip()
-            
-        # SKIP HEADER ROWS
-        if not raw_date or "date" in raw_date.lower() or "description" in description.lower():
-            return None
-        
-        # Validate date format strictly (YYYY-MM-DD)
+INCOME_KEYWORDS = ["salary deposit", "sales deposit", "deposit", "refund", "rebate", "interest", "credit", "income"]
+
+
+def categorize(description: str) -> str:
+    text = (description or "").lower()
+    for category, keywords in CATEGORY_RULES:
+        if any(keyword in text for keyword in keywords):
+            return category
+    return "Other"
+
+
+# ------------------------------------------------------------------ parsing helpers
+_DATE_FORMATS = (
+    "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d",
+    "%b %d, %Y", "%B %d, %Y", "%d %b %Y", "%d %B %Y", "%m-%d-%Y",
+)
+
+
+def normalize_date(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    for fmt in _DATE_FORMATS:
         try:
-            date_obj = datetime.strptime(raw_date, "%Y-%m-%d").date()
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
         except ValueError:
-            return None  # Skip rows like "July 2026" or "August 2026"
-        
-        # Parse amount (handle commas, $, +)
-        amount_str = amount_str.replace(",", "").replace("$", "").replace("+", "")
-        try:
-            amount = float(amount_str)
-        except ValueError:
-            return None
-        
-        category = categorize_transaction(description)
-        
-        return {
-            "date": date_obj,
-            "merchant": description,
-            "amount": abs(amount),
-            "category": category,
-            "description": description
-        }
+            continue
+    try:  # pandas Timestamp / datetime objects / ISO with time
+        return datetime.fromisoformat(text[:10]).strftime("%Y-%m-%d")
     except Exception:
         return None
 
-def extract_uploaded_file(file_path: str, suffix: str) -> list[dict]:
-    """Extract transactions from PDF, CSV, or receipt image files."""
-    if suffix == ".pdf":
-        return extract_pdf_statement(file_path)
-    if suffix == ".csv":
-        import pandas as pd
-        frame = pd.read_csv(file_path)
-        columns = {str(column).strip().lower(): column for column in frame.columns}
-        date_column = next((columns[name] for name in ("date", "transaction date", "posted date") if name in columns), None)
-        description_column = next((columns[name] for name in ("description", "merchant", "name", "payee") if name in columns), None)
-        amount_column = next((columns[name] for name in ("amount", "value", "transaction amount") if name in columns), None)
-        if not date_column or not description_column or not amount_column:
-            raise ValueError("CSV must include date, description/merchant, and amount columns")
-        transactions = []
-        for _, row in frame.iterrows():
-            try:
-                date_value = datetime.fromisoformat(str(row[date_column])[:10]).date()
-                amount = float(str(row[amount_column]).replace(",", "").replace("$", "").strip())
-                description = str(row[description_column]).strip()
-                transactions.append({"date": date_value, "merchant": description, "amount": abs(amount), "category": categorize_transaction(description), "description": description})
-            except (TypeError, ValueError):
-                continue
-        return transactions
-    if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-        try:
-            import pytesseract
-            from PIL import Image
-            text = pytesseract.image_to_string(Image.open(file_path))
-        except ImportError as error:
-            raise ValueError("Receipt images require Pillow and Tesseract OCR") from error
-        match = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2}).{0,120}?(\$?\s?[\d,]+\.\d{2})", text, re.S)
-        if not match:
-            raise ValueError("Could not find a date and total in the receipt image")
-        date_value = datetime.strptime(match.group(1).replace("/", "-"), "%Y-%m-%d").date()
-        amount = float(match.group(2).replace("$", "").replace(",", "").strip())
-        description = next((line.strip() for line in text.splitlines() if line.strip()), "Receipt")
-        return [{"date": date_value, "merchant": description, "amount": amount, "category": categorize_transaction(description), "description": description}]
-    raise ValueError(f"Unsupported file type: {suffix}")
 
-def categorize_transaction(description: str) -> str:
+_AMOUNT_RE = re.compile(r"[+-]?[\d,]+(?:\.\d{1,2})?")
 
-    """Auto-categorizes transactions based on keywords."""
-    description_lower = description.lower()
-    
-    categories = {
-        "Entertainment": ["netflix", "spotify", "hulu", "disney", "youtube"],
-        "Groceries": ["whole foods", "trader joe", "safeway", "grocery", "market"],
-        "Transport": ["uber", "lyft", "shell", "chevron", "gas", "parking"],
-        "Shopping": ["amazon", "target", "walmart", "costco"],
-        "Food & Dining": ["starbucks", "mcdonald", "restaurant", "cafe", "pizza"],
-        "Utilities": ["electric", "water", "gas bill", "internet", "phone"],
-        "Health": ["pharmacy", "cvs", "walgreens", "doctor", "medical"],
-    }
-    
-    for category, keywords in categories.items():
-        if any(keyword in description_lower for keyword in keywords):
-            return category
-    
-    return "Other"
 
-if __name__ == "__main__":
-    from database import init_database, insert_transactions
-    print(" Starting MoneyPilot Data Ingestion...\n")
-    init_database()
-    transactions = extract_pdf_statement("real_multi_month_statement.pdf")
-    if transactions:
-        count = insert_transactions(transactions)
-        print(f"\n Success! {count} transactions inserted.")
+def parse_amount(raw: Any) -> float | None:
+    """Returns a SIGNED float, or None when the cell is not an amount."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip().replace("$", "").replace(" ", "").replace("€", "").replace("£", "")
+    if not text:
+        return None
+    paren = text.startswith("(") and text.endswith(")")
+    if paren:
+        text = text[1:-1]
+    match = _AMOUNT_RE.search(text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    if paren or text.startswith("-"):
+        return -abs(value)
+    return abs(value)
+
+
+def _is_header(cells: list[str]) -> bool:
+    joined = " ".join(cells).lower()
+    return "date" in joined and ("amount" in joined or "description" in joined)
+
+
+def make_transaction(date_iso: str, description: str, signed_amount: float) -> dict[str, Any]:
+    """amount is stored as a positive magnitude; direction lives in type."""
+    desc = (description or "").strip() or "Unknown"
+    if signed_amount > 0:
+        tx_type = "income"
+    elif signed_amount < 0:
+        tx_type = "expense"
     else:
-        print("\n No transactions found.")
+        tx_type = "income" if any(k in desc.lower() for k in INCOME_KEYWORDS) else "expense"
+    return {
+        "date": date_iso,
+        "merchant": desc,
+        "description": desc,
+        "amount": round(abs(signed_amount), 2),
+        "category": categorize(desc),
+        "type": tx_type,
+        "transaction_type": tx_type,
+    }
+
+
+_LINE_RE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2})\s+(.+?)\s+([+-]?[\d,]+\.\d{2})\s*$")
+
+
+# ------------------------------------------------------------------ PDF
+def extract_pdf(path: str) -> list[dict[str, Any]]:
+    import pdfplumber
+
+    transactions: list[dict[str, Any]] = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables() or []
+            for table in tables:
+                for row in table:
+                    cells = [(c or "").strip() if isinstance(c, str) else "" for c in row]
+                    if not any(cells) or _is_header(cells):
+                        continue
+                    date_iso = normalize_date(cells[0])
+                    if not date_iso:
+                        continue
+                    description = cells[1] if len(cells) > 1 else ""
+                    signed = None
+                    for candidate in cells[2:]:
+                        signed = parse_amount(candidate)
+                        if signed is not None:
+                            break
+                    if signed is None:
+                        continue
+                    transactions.append(make_transaction(date_iso, description, signed))
+            if not tables:  # text-only PDFs: fall back to line regex
+                for line in (page.extract_text() or "").splitlines():
+                    m = _LINE_RE.match(line)
+                    if m:
+                        signed = parse_amount(m.group(3))
+                        if signed is not None:
+                            transactions.append(make_transaction(m.group(1), m.group(2), signed))
+    return transactions
+
+
+# ------------------------------------------------------------------ CSV
+def extract_csv(path: str) -> list[dict[str, Any]]:
+    import pandas as pd
+
+    df = pd.read_csv(path)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    date_col = next((c for c in df.columns if "date" in c), None)
+    desc_col = next((c for c in df.columns if any(k in c for k in ("description", "merchant", "detail", "payee"))), None)
+    amount_col = next((c for c in df.columns if "amount" in c), None)
+    if date_col is None or amount_col is None:
+        return []
+    transactions: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        date_iso = normalize_date(row[date_col])
+        if not date_iso:
+            continue
+        signed = parse_amount(row[amount_col])
+        if signed is None:
+            continue
+        description = str(row[desc_col]) if desc_col is not None and pd.notna(row[desc_col]) else "Unknown"
+        transactions.append(make_transaction(date_iso, description, float(signed)))
+    return transactions
+
+
+# ------------------------------------------------------------------ receipt images (OCR)
+def extract_image(path: str) -> list[dict[str, Any]]:
+    import pytesseract
+    from PIL import Image
+
+    text = pytesseract.image_to_string(Image.open(path))
+    transactions: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        m = _LINE_RE.match(line)
+        if m:
+            signed = parse_amount(m.group(3))
+            if signed is not None:
+                transactions.append(make_transaction(m.group(1), m.group(2), signed))
+    return transactions
+
+
+# ------------------------------------------------------------------ entry point (used by api.py)
+def extract_uploaded_file(path: str, suffix: str) -> list[dict[str, Any]]:
+    suffix = (suffix or Path(path).suffix).lower()
+    if suffix == ".pdf":
+        return extract_pdf(path)
+    if suffix == ".csv":
+        return extract_csv(path)
+    if suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        return extract_image(path)
+    return []

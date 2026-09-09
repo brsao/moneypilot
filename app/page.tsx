@@ -57,7 +57,6 @@ export default function Page() {
       .slice(-12)
   }, [chartData])
 
-  // Cumulative net cash flow per month for the line graph
   const cashFlowSeries = useMemo(() => {
     let running = 0
     return chartPoints.map((point) => {
@@ -67,12 +66,11 @@ export default function Page() {
     })
   }, [chartPoints])
 
-  // ✅ FIX: full-ledger totals from ClickHouse aggregates (all uploaded PDFs combined),
-  // with fallback to the recent list if the backend omits them
   const summaryAgg = analysis?.summary.summary ?? {}
   const income = summaryAgg.income?.total ?? transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0)
   const expenses = summaryAgg.expense?.total ?? transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0)
   const totalCount = (summaryAgg.income?.count ?? 0) + (summaryAgg.expense?.count ?? 0)
+  const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 100) : 0
 
   const categories = analysis?.summary.top_categories ?? []
   const totalSpent = categories.reduce((sum, item) => sum + item.total, 0)
@@ -98,7 +96,6 @@ export default function Page() {
     } catch { /* backend offline: keep current state */ }
   }
 
-  // First load: show persisted ClickHouse data (or seed the sample statement)
   useEffect(() => {
     refreshAnalysis()
   }, [])
@@ -131,7 +128,7 @@ export default function Page() {
       const result = await response.json()
       if (!response.ok) throw new Error(result.detail ?? 'The Python service could not analyze these files.')
       setAnalysis(result as AnalysisResult)
-      await refreshAnalysis()   // re-read full ClickHouse aggregates so every upload visibly updates the dashboard
+      await refreshAnalysis()
       setSelectedFiles([])
       setShowPanel(false)
     } catch (error) {
@@ -178,7 +175,14 @@ export default function Page() {
 
             <div className="grid gap-4 md:grid-cols-3">
               <article className="rounded-2xl border border-border bg-card p-5"><div className="mb-6 flex items-center justify-between"><span className="text-sm text-muted-foreground">Available balance</span><span className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-accent-foreground">Healthy</span></div><p className="text-3xl font-semibold tracking-tight">{analysis ? formatMoney(Math.max(0, income - expenses)) : '—'}</p><div className="mt-3 flex items-center gap-1 text-sm text-muted-foreground">{analysis ? `${totalCount || transactions.length} transactions analyzed` : 'Upload data to calculate'}</div></article>
-              <article className="rounded-2xl border border-border bg-card p-5"><div className="mb-6 flex items-center justify-between"><span className="text-sm text-muted-foreground">Projected month-end</span><Gauge size={18} className="text-muted-foreground" /></div><p className="text-3xl font-semibold tracking-tight">{analysis ? formatMoney(income - expenses) : '—'}</p><div className="mt-3 flex items-center gap-1 text-sm text-muted-foreground">{analysis ? 'Current analyzed period' : 'Waiting for your data'}</div></article>
+              <article className="rounded-2xl border border-border bg-card p-5">
+                <div className="mb-6 flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Savings rate</span>
+                  <Gauge size={18} className="text-muted-foreground" />
+                </div>
+                <p className="text-3xl font-semibold tracking-tight">{analysis ? `${savingsRate}%` : '—'}</p>
+                <div className="mt-3 flex items-center gap-1 text-sm text-muted-foreground">{analysis ? `${savingsRate >= 20 ? 'Strong' : savingsRate >= 5 ? 'Moderate' : 'Tight'} · of income kept across analyzed months` : 'Waiting for your data'}</div>
+              </article>
               <article className="rounded-2xl border border-border bg-primary p-5 text-primary-foreground"><div className="mb-5 flex items-center justify-between"><span className="text-sm opacity-75">MoneyPilot score</span><Sparkles size={18} /></div><div className="flex items-end gap-3"><p className="text-4xl font-semibold tracking-tight">{health}</p><p className="mb-1 text-sm opacity-75">/ 100</p></div><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-primary-foreground/20"><div className="h-full rounded-full bg-primary-foreground" style={{ width: `${health}%` }} /></div><p className="mt-3 text-xs opacity-75">{analysis ? 'Your uploaded data powers this score.' : 'Upload a statement to calculate your score.'}</p></article>
             </div>
 
