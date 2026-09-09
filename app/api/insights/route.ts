@@ -1,17 +1,20 @@
-// app/api/insights/route.ts
 import { NextResponse } from 'next/server'
 
 export const maxDuration = 120
 
 export async function POST(request: Request) {
-  const backendUrl = (process.env.PYTHON_API_URL ?? process.env.PYTHON_SERVER_URL ?? process.env.MONEY_PILOT_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
-  
+  // ✅ FIX: Bracket notation forces runtime evaluation + hardcoded live fallback
+  const backendUrl = (
+    process.env["PYTHON_API_URL"] ?? 
+    process.env["PYTHON_SERVER_URL"] ?? 
+    'https://moneypilot-api-722080548291.us-central1.run.app'
+  ).replace(/\/$/, '')
+
   try {
     const payload = await request.json().catch(() => ({}))
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 110_000)
     
-    // Forward the request to your live Python FastAPI backend
     const response = await fetch(`${backendUrl}/insights`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

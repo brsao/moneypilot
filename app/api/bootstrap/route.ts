@@ -3,10 +3,12 @@ import { NextResponse } from 'next/server'
 const EMPTY = { processed_files: [], transaction_count: 0, summary: { summary: {}, top_categories: [], recent_transactions: [] }, chart_data: [] }
 
 export async function GET() {
+  // ✅ FIX: Bracket notation + live fallback
   const urls = [
-    process.env.PYTHON_API_URL,
-    process.env.PYTHON_SERVER_URL,
-    'http://127.0.0.1:8000',   // ✅ IPv4 first — no more ECONNREFUSED ::1 noise
+    process.env["PYTHON_API_URL"],
+    process.env["PYTHON_SERVER_URL"],
+    'https://moneypilot-api-722080548291.us-central1.run.app',
+    'http://127.0.0.1:8000',
     'http://localhost:8000'
   ].filter(Boolean) as string[]
 
