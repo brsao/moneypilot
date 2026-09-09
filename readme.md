@@ -1,6 +1,9 @@
 # MoneyPilot 💸
 Personal finance, clear. Upload bank PDFs/CSVs → get a calm cash-flow cockpit.
 
+[![MoneyPilot dashboard](python/images/Dashboard.png)](https://moneypilot-web-722080548291.us-central1.run.app)
+*Click the screenshot to open the live demo.*
+
 ## ✨ Features
 - PDF/CSV statement extraction (pdfplumber) with category classification
 - ClickHouse analytics: balances, top categories, monthly cash flow
@@ -27,4 +30,4 @@ pnpm dev                           # Next.js on :3000, Python concurrently
 - Python env: `GEMINI_API_KEY=...`, ClickHouse creds in `python/database.py`
 
 ## 🎬 Demo
-See [demo video](LINK) — upload → analyze → dashboard + Gemini insights in 60s.
+See [demo video](https://youtu.be/z2ef2PPPI1g) — upload → analyze → dashboard + Gemini insights in 60s.
